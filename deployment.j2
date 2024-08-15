@@ -3,54 +3,58 @@ kind: Deployment
 metadata:
   name: {{ dc.metadata.name }}
   namespace: {{ namespace }}
+{% if prepared_labels %}
   labels:
-    {% for key, value in prepared_labels.items() %}
-    {{ key }}: {{ value }}
-    {% endfor %}
-    {% for label in custom_labels %}
-    {{ label }}: {{ dc.metadata.labels[label] | default('') }}
-    {% endfor %}
+{% for key, value in prepared_labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{% endif %}
+{% if prepared_annotations %}
   annotations:
-    {% for key, value in prepared_annotations.items() %}
-    {{ key }}: {{ value }}
-    {% endfor %}
-    {% for annotation in custom_annotations %}
-    {{ annotation }}: {{ dc.metadata.annotations[annotation] | default('') }}
-    {% endfor %}
+{% for key, value in prepared_annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
     openshift.io/generated-by: "deploymentconfig-to-deployment-migration"
     openshift.io/migration-timestamp: "{{ timestamp }}"
+{% endif %}
 spec:
   replicas: {{ dc.spec.replicas }}
   selector:
     matchLabels:
-      {% for key, value in dc.spec.selector | default({}) | dictsort %}
-      {{ key }}: {{ value }}
-      {% endfor %}
+{% for key, value in dc.spec.selector | default({}) | dictsort %}
+      {{ key }}: "{{ value }}"
+{% endfor %}
   template:
     metadata:
       labels:
-        {% for key, value in dc.spec.template.metadata.labels | default({}) | dictsort %}
-        {{ key }}: {{ value }}
-        {% endfor %}
+{% for key, value in dc.spec.template.metadata.labels | default({}) | dictsort %}
+        {{ key }}: "{{ value }}"
+{% endfor %}
     spec:
       containers:
-      {% for container in dc.spec.template.spec.containers %}
-      - name: {{ container.name }}
-        image: {{ container.image }}
-        {% if container.ports is defined and container.ports %}
+      - name: {{ dc.spec.template.spec.containers[0].name }}
+        image: {{ dc.spec.template.spec.containers[0].image }}
+{% if dc.spec.template.spec.containers[0].ports is defined and dc.spec.template.spec.containers[0].ports %}
         ports:
-        {% for port in container.ports %}
+{% for port in dc.spec.template.spec.containers[0].ports %}
         - containerPort: {{ port.containerPort }}
-          {% if port.protocol is defined %}
+{% if port.protocol is defined %}
           protocol: {{ port.protocol }}
-          {% endif %}
-        {% endfor %}
-        {% endif %}
-        {% if container.env is defined and container.env %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if dc.spec.template.spec.containers[0].env is defined and dc.spec.template.spec.containers[0].env %}
         env:
-        {% for env in container.env %}
+{% for env in dc.spec.template.spec.containers[0].env %}
         - name: {{ env.name }}
           value: "{{ env.value }}"
-        {% endfor %}
-        {% endif %}
-      {% endfor %}
+{% endfor %}
+{% endif %}
+{% if dc.spec.template.spec.containers[0].resources is defined and dc.spec.template.spec.containers[0].resources %}
+        resources:
+{{ dc.spec.template.spec.containers[0].resources | to_nice_yaml(indent=4) | indent(10, first=True) }}
+{% endif %}
+{% if dc.spec.template.spec.volumes is defined and dc.spec.template.spec.volumes %}
+      volumes:
+{{ dc.spec.template.spec.volumes | to_nice_yaml(indent=2) | indent(6, first=True) }}
+{% endif %}

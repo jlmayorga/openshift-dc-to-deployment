@@ -5,7 +5,8 @@
   gather_facts: true
 
   vars:
-    openshift_projects: []
+    openshift_projects:
+      - demo
     output_dir: "./converted_deployments"
     reserved_namespaces:
       - "default"
@@ -13,16 +14,13 @@
       - "openshift-infra"
     apply_changes: false
     log_file: "conversion_log.txt"
-    custom_annotations:
-      - "mycompany.com/custom-annotation"
-    custom_labels:
-      - "mycompany.com/custom-label"
     preserve_existing_annotations: true
     preserve_existing_labels: true
     dc_specific_annotations:
       - "openshift.io/deployment-config.name"
       - "openshift.io/deployment-config.latest-version"
       - "openshift.io/deployment.phase"
+      - "openshift.io/generated-by"
     dc_specific_labels:
       - "openshift.io/deployment-config.name"
 
@@ -201,8 +199,6 @@
             namespace: "{{ item.0.item }}"
             dc: "{{ item.1 }}"
             timestamp: "{{ migration_timestamp }}"
-            custom_annotations: "{{ custom_annotations | default([]) }}"
-            custom_labels: "{{ custom_labels | default([]) }}"
             prepared_labels: "{{ prepared_labels }}"
             prepared_annotations: "{{ prepared_annotations }}"
       rescue:
