@@ -1,0 +1,119 @@
+---
+- name: Convert OpenShift DeploymentConfigs to Deployments across multiple namespaces
+  hosts: localhost
+  gather_facts: true
+  vars:
+    openshift_projects:
+      - "demo"
+    output_dir: "./converted_deployments"
+    reserved_namespaces:
+      - "default"
+      - "openshift"
+      - "openshift-infra"
+    apply_changes: false  # Default to false for safety
+
+  tasks:
+    - name: Set migration timestamp
+      ansible.builtin.set_fact:
+        migration_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    - name: Get all namespaces
+      kubernetes.core.k8s_info:
+        kind: Namespace
+      register: all_namespaces
+
+    - name: Create list of all reserved namespaces
+      ansible.builtin.set_fact:
+        all_reserved_namespaces: >-
+          {{ reserved_namespaces + (all_namespaces.resources |
+          map(attribute='metadata.name') |
+          select('match', '^(openshift-|kube-)') | list) }}
+
+    - name: Filter projects and identify skipped namespaces
+      ansible.builtin.set_fact:
+        filtered_projects: "{{ openshift_projects | difference(all_reserved_namespaces) }}"
+        skipped_namespaces: "{{ openshift_projects | intersect(all_reserved_namespaces) }}"
+
+    - name: Warn about skipped namespaces
+      ansible.builtin.debug:
+        msg: "Skipping reserved or system namespaces: {{ skipped_namespaces | join(', ') }}"
+      when: skipped_namespaces | length > 0
+
+    - name: Validate namespaces exist
+      kubernetes.core.k8s_info:
+        kind: Namespace
+        name: "{{ item }}"
+      loop: "{{ filtered_projects }}"
+      register: namespace_check
+
+    - name: Fail if any namespaces don't exist
+      ansible.builtin.fail:
+        msg: >-
+          The following namespaces do not exist: {{ namespace_check.results |
+          selectattr('resources', 'eq', []) | map(attribute='item') | join(', ') }}
+      when: namespace_check.results | selectattr('resources', 'eq', []) | list | length > 0
+
+    - name: Ensure output directories exist
+      ansible.builtin.file:
+        path: "{{ output_dir }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ filtered_projects }}"
+
+    - name: Get DeploymentConfigs
+      kubernetes.core.k8s_info:
+        api_version: apps.openshift.io/v1
+        kind: DeploymentConfig
+        namespace: "{{ item }}"
+      register: dc_output
+      loop: "{{ filtered_projects }}"
+
+    - name: Convert DeploymentConfigs to Deployments and save to files
+      ansible.builtin.template:
+        src: deployment.j2
+        dest: "{{ output_dir }}/{{ item.0.item }}/{{ item.1.metadata.name }}.yaml"
+        mode: "0644"
+      loop: "{{ dc_output.results | subelements('resources') }}"
+      loop_control:
+        label: "{{ item.0.item }} - {{ item.1.metadata.name }}"
+      vars:
+        namespace: "{{ item.0.item }}"
+        dc: "{{ item.1 }}"
+        timestamp: "{{ migration_timestamp }}"
+
+    - name: Find created YAML files
+      ansible.builtin.find:
+        paths: "{{ output_dir }}"
+        patterns: "*.yaml"
+        recurse: true
+      register: found_yaml_files
+
+    - name: Apply Deployments
+      kubernetes.core.k8s:
+        definition: "{{ lookup('file', item.path) }}"
+        state: present
+      loop: "{{ found_yaml_files.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      when:
+        - found_yaml_files.matched > 0
+        - apply_changes | bool
+
+    - name: Calculate total conversions
+      ansible.builtin.set_fact:
+        total_conversions: "{{ dc_output.results | map(attribute='resources') | map('length') | sum }}"
+
+    - name: Summary of conversions
+      ansible.builtin.debug:
+        msg: >-
+          Summary of DeploymentConfig to Deployment conversion:
+          - Total namespaces specified: {{ openshift_projects | length }}
+          - Namespaces processed: {{ filtered_projects | length }}
+          - Namespaces skipped (reserved or system): {{ skipped_namespaces | length }}
+          {% if skipped_namespaces %}
+          - Skipped namespaces: {{ skipped_namespaces | join(', ') }}
+          {% endif %}
+          - Total DeploymentConfigs converted: {{ total_conversions }}
+          - YAML files saved in subdirectories of: {{ output_dir }}
+          - Changes applied to cluster: {{ apply_changes | bool }}
+          - Migration timestamp: {{ migration_timestamp }}

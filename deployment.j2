@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ dc.metadata.name }}
+  namespace: {{ namespace }}
+  labels:
+    app: {{ dc.metadata.name }}
+  annotations:
+    openshift.io/generated-by: "deploymentconfig-to-deployment-migration"
+    openshift.io/migration-timestamp: "{{ timestamp }}"
+spec:
+  replicas: {{ dc.spec.replicas }}
+  selector:
+    matchLabels:
+      app: {{ dc.metadata.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ dc.metadata.name }}
+    spec:
+      containers:
+      - name: {{ dc.spec.template.spec.containers[0].name }}
+        image: {{ dc.spec.template.spec.containers[0].image }}
+        ports:
+        {% for port in dc.spec.template.spec.containers[0].ports %}
+        - containerPort: {{ port.containerPort }}
+        {% endfor %}
+        {% if dc.spec.template.spec.containers[0].env is defined %}
+        env:
+        {% for env in dc.spec.template.spec.containers[0].env %}
+        - name: {{ env.name }}
+          value: "{{ env.value }}"
+        {% endfor %}
+        {% endif %}
