@@ -34,8 +34,8 @@ Key points about DeploymentConfig deprecation:
 
 1. Clone this repository:
    ```
-   git clone <repository-url>
-   cd <repository-directory>
+   git clone https://github.com/jlmayorga/openshift-dc-to-deployment.git
+   cd openshift-dc-to-deployment
    ```
 
 2. Install required Ansible collections:
