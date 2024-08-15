@@ -4,31 +4,53 @@ metadata:
   name: {{ dc.metadata.name }}
   namespace: {{ namespace }}
   labels:
-    app: {{ dc.metadata.name }}
+    {% for key, value in prepared_labels.items() %}
+    {{ key }}: {{ value }}
+    {% endfor %}
+    {% for label in custom_labels %}
+    {{ label }}: {{ dc.metadata.labels[label] | default('') }}
+    {% endfor %}
   annotations:
+    {% for key, value in prepared_annotations.items() %}
+    {{ key }}: {{ value }}
+    {% endfor %}
+    {% for annotation in custom_annotations %}
+    {{ annotation }}: {{ dc.metadata.annotations[annotation] | default('') }}
+    {% endfor %}
     openshift.io/generated-by: "deploymentconfig-to-deployment-migration"
     openshift.io/migration-timestamp: "{{ timestamp }}"
 spec:
   replicas: {{ dc.spec.replicas }}
   selector:
     matchLabels:
-      app: {{ dc.metadata.name }}
+      {% for key, value in dc.spec.selector | default({}) | dictsort %}
+      {{ key }}: {{ value }}
+      {% endfor %}
   template:
     metadata:
       labels:
-        app: {{ dc.metadata.name }}
+        {% for key, value in dc.spec.template.metadata.labels | default({}) | dictsort %}
+        {{ key }}: {{ value }}
+        {% endfor %}
     spec:
       containers:
-      - name: {{ dc.spec.template.spec.containers[0].name }}
-        image: {{ dc.spec.template.spec.containers[0].image }}
+      {% for container in dc.spec.template.spec.containers %}
+      - name: {{ container.name }}
+        image: {{ container.image }}
+        {% if container.ports is defined and container.ports %}
         ports:
-        {% for port in dc.spec.template.spec.containers[0].ports %}
+        {% for port in container.ports %}
         - containerPort: {{ port.containerPort }}
+          {% if port.protocol is defined %}
+          protocol: {{ port.protocol }}
+          {% endif %}
         {% endfor %}
-        {% if dc.spec.template.spec.containers[0].env is defined %}
+        {% endif %}
+        {% if container.env is defined and container.env %}
         env:
-        {% for env in dc.spec.template.spec.containers[0].env %}
+        {% for env in container.env %}
         - name: {{ env.name }}
           value: "{{ env.value }}"
         {% endfor %}
         {% endif %}
+      {% endfor %}

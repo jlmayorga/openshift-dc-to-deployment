@@ -1,64 +1,151 @@
 ---
 - name: Convert OpenShift DeploymentConfigs to Deployments across multiple namespaces
   hosts: localhost
+  connection: local
   gather_facts: true
+
   vars:
-    openshift_projects:
-      - "demo"
+    openshift_projects: []
     output_dir: "./converted_deployments"
     reserved_namespaces:
       - "default"
       - "openshift"
       - "openshift-infra"
-    apply_changes: false  # Default to false for safety
+    apply_changes: false
+    log_file: "conversion_log.txt"
+    custom_annotations:
+      - "mycompany.com/custom-annotation"
+    custom_labels:
+      - "mycompany.com/custom-label"
+    preserve_existing_annotations: true
+    preserve_existing_labels: true
+    dc_specific_annotations:
+      - "openshift.io/deployment-config.name"
+      - "openshift.io/deployment-config.latest-version"
+      - "openshift.io/deployment.phase"
+    dc_specific_labels:
+      - "openshift.io/deployment-config.name"
+
+  pre_tasks:
+    - name: Validate input parameters
+      ansible.builtin.assert:
+        that:
+          - openshift_projects is sequence
+          - output_dir is string
+          - apply_changes | type_debug == "bool"
+          - preserve_existing_annotations | type_debug == "bool"
+          - preserve_existing_labels | type_debug == "bool"
+        fail_msg: "Invalid input parameters. Please check your variable definitions."
 
   tasks:
+    - name: Ensure log file exists
+      ansible.builtin.file:
+        path: "{{ log_file }}"
+        state: touch
+        mode: '0644'
+      register: log_file_creation
+
     - name: Set migration timestamp
       ansible.builtin.set_fact:
         migration_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    - name: Log start of migration
+      ansible.builtin.lineinfile:
+        path: "{{ log_file }}"
+        line: "Migration started at {{ migration_timestamp }}"
+
+    - name: Check permissions for DeploymentConfigs and Deployments
+      block:
+        - name: Check read permissions for DeploymentConfigs
+          kubernetes.core.k8s_info:
+            api_version: apps.openshift.io/v1
+            kind: DeploymentConfig
+            namespace: "{{ item }}"
+          loop: "{{ openshift_projects }}"
+          register: dc_read_check
+
+        - name: Check read permissions for Deployments
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: Deployment
+            namespace: "{{ item }}"
+          loop: "{{ openshift_projects }}"
+          register: deployment_read_check
+
+        - name: Validate permissions
+          ansible.builtin.assert:
+            that:
+              - dc_read_check.results | map(attribute='failed') | select('true') | list | length == 0
+              - deployment_read_check.results | map(attribute='failed') | select('true') | list | length == 0
+            fail_msg: "Insufficient permissions. Please ensure you have read access to both DeploymentConfigs and Deployments in the specified namespaces."
+      rescue:
+        - name: Log permission check failure
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: "Permission check failed: {{ ansible_failed_result.msg }}"
+        - name: Fail the playbook
+          ansible.builtin.fail:
+            msg: "Permission check failed. Please check the log file for details."
 
     - name: Get all namespaces
       kubernetes.core.k8s_info:
         kind: Namespace
       register: all_namespaces
+      until: all_namespaces is succeeded
+      retries: 3
+      delay: 5
 
     - name: Create list of all reserved namespaces
       ansible.builtin.set_fact:
         all_reserved_namespaces: >-
           {{ reserved_namespaces + (all_namespaces.resources |
-          map(attribute='metadata.name') |
+          default([]) | map(attribute='metadata.name') |
           select('match', '^(openshift-|kube-)') | list) }}
+      when: all_namespaces is succeeded
 
     - name: Filter projects and identify skipped namespaces
       ansible.builtin.set_fact:
         filtered_projects: "{{ openshift_projects | difference(all_reserved_namespaces) }}"
         skipped_namespaces: "{{ openshift_projects | intersect(all_reserved_namespaces) }}"
+      when: all_namespaces is succeeded
 
-    - name: Warn about skipped namespaces
-      ansible.builtin.debug:
-        msg: "Skipping reserved or system namespaces: {{ skipped_namespaces | join(', ') }}"
-      when: skipped_namespaces | length > 0
+    - name: Log skipped namespaces
+      ansible.builtin.lineinfile:
+        path: "{{ log_file }}"
+        line: "Skipping reserved or system namespaces: {{ skipped_namespaces | join(', ') }}"
+      when: 
+        - skipped_namespaces is defined
+        - skipped_namespaces | length > 0
 
     - name: Validate namespaces exist
       kubernetes.core.k8s_info:
         kind: Namespace
         name: "{{ item }}"
-      loop: "{{ filtered_projects }}"
+      loop: "{{ filtered_projects | default([]) }}"
       register: namespace_check
+      failed_when: false
 
-    - name: Fail if any namespaces don't exist
-      ansible.builtin.fail:
-        msg: >-
-          The following namespaces do not exist: {{ namespace_check.results |
-          selectattr('resources', 'eq', []) | map(attribute='item') | join(', ') }}
-      when: namespace_check.results | selectattr('resources', 'eq', []) | list | length > 0
+    - name: Log namespace validation errors
+      ansible.builtin.lineinfile:
+        path: "{{ log_file }}"
+        line: "Error validating namespace {{ item.item }}: {{ item.msg }}"
+      loop: "{{ namespace_check.results | default([]) }}"
+      when: item.failed | default(false)
 
     - name: Ensure output directories exist
       ansible.builtin.file:
         path: "{{ output_dir }}/{{ item }}"
         state: directory
         mode: "0755"
-      loop: "{{ filtered_projects }}"
+      loop: "{{ filtered_projects | default([]) }}"
+      register: directory_creation
+
+    - name: Log directory creation errors
+      ansible.builtin.lineinfile:
+        path: "{{ log_file }}"
+        line: "Error creating directory for namespace {{ item.item }}: {{ item.msg }}"
+      loop: "{{ directory_creation.results | default([]) }}"
+      when: item.failed | default(false)
 
     - name: Get DeploymentConfigs
       kubernetes.core.k8s_info:
@@ -66,20 +153,65 @@
         kind: DeploymentConfig
         namespace: "{{ item }}"
       register: dc_output
-      loop: "{{ filtered_projects }}"
+      loop: "{{ filtered_projects | default([]) }}"
+      failed_when: false
+
+    - name: Log DeploymentConfig retrieval errors
+      ansible.builtin.lineinfile:
+        path: "{{ log_file }}"
+        line: "Error retrieving DeploymentConfigs in namespace {{ item.item }}: {{ item.msg }}"
+      loop: "{{ dc_output.results | default([]) }}"
+      when: item.failed | default(false)
 
     - name: Convert DeploymentConfigs to Deployments and save to files
-      ansible.builtin.template:
-        src: deployment.j2
-        dest: "{{ output_dir }}/{{ item.0.item }}/{{ item.1.metadata.name }}.yaml"
-        mode: "0644"
-      loop: "{{ dc_output.results | subelements('resources') }}"
-      loop_control:
-        label: "{{ item.0.item }} - {{ item.1.metadata.name }}"
-      vars:
-        namespace: "{{ item.0.item }}"
-        dc: "{{ item.1 }}"
-        timestamp: "{{ migration_timestamp }}"
+      block:
+        - name: Prepare labels and annotations
+          ansible.builtin.set_fact:
+            prepared_labels: >-
+              {{ {} if not (preserve_existing_labels | bool) 
+                 else (item.1.metadata.labels | default({}) | 
+                       dict2items | 
+                       rejectattr("key", "in", dc_specific_labels) | 
+                       list | items2dict) }}
+            prepared_annotations: >-
+              {{ {} if not (preserve_existing_annotations | bool) 
+                 else (item.1.metadata.annotations | default({}) | 
+                       dict2items | 
+                       rejectattr("key", "in", dc_specific_annotations) | 
+                       list | items2dict) }}
+          loop: >-
+            {{ dc_output.results | default([]) | 
+               selectattr('resources', 'defined') | 
+               subelements('resources') }}
+          loop_control:
+            label: "{{ item.0.item }} - {{ item.1.metadata.name }}"
+
+        - name: Perform conversion
+          ansible.builtin.template:
+            src: deployment.j2
+            dest: "{{ output_dir }}/{{ item.0.item }}/{{ item.1.metadata.name }}.yaml"
+            mode: "0644"
+          loop: >-
+            {{ dc_output.results | default([]) | 
+               selectattr('resources', 'defined') | 
+               subelements('resources') }}
+          loop_control:
+            label: "{{ item.0.item }} - {{ item.1.metadata.name }}"
+          vars:
+            namespace: "{{ item.0.item }}"
+            dc: "{{ item.1 }}"
+            timestamp: "{{ migration_timestamp }}"
+            custom_annotations: "{{ custom_annotations | default([]) }}"
+            custom_labels: "{{ custom_labels | default([]) }}"
+            prepared_labels: "{{ prepared_labels }}"
+            prepared_annotations: "{{ prepared_annotations }}"
+      rescue:
+        - name: Log conversion errors
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: >-
+              Error converting DeploymentConfig {{ item.1.metadata.name }} 
+              in namespace {{ item.0.item }}: {{ ansible_failed_result.msg }}
 
     - name: Find created YAML files
       ansible.builtin.find:
@@ -89,31 +221,40 @@
       register: found_yaml_files
 
     - name: Apply Deployments
-      kubernetes.core.k8s:
-        definition: "{{ lookup('file', item.path) }}"
-        state: present
-      loop: "{{ found_yaml_files.files }}"
-      loop_control:
-        label: "{{ item.path | basename }}"
-      when:
-        - found_yaml_files.matched > 0
-        - apply_changes | bool
+      block:
+        - name: Apply YAML files
+          kubernetes.core.k8s:
+            definition: "{{ lookup('ansible.builtin.file', item.path) | from_yaml }}"
+            state: present
+          loop: "{{ found_yaml_files.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+          when:
+            - found_yaml_files.matched > 0
+            - apply_changes | bool
+      rescue:
+        - name: Log apply errors
+          ansible.builtin.lineinfile:
+            path: "{{ log_file }}"
+            line: "Error applying Deployment from file {{ item.path }}: {{ ansible_failed_result.msg }}"
 
     - name: Calculate total conversions
       ansible.builtin.set_fact:
-        total_conversions: "{{ dc_output.results | map(attribute='resources') | map('length') | sum }}"
+        total_conversions: >-
+          {{ dc_output.results | default([]) | 
+             selectattr('resources', 'defined') | 
+             map(attribute='resources') | 
+             map('length') | 
+             sum }}
 
-    - name: Summary of conversions
+    - name: Log summary of conversions
+      ansible.builtin.lineinfile:
+        path: "{{ log_file }}"
+        line: >-
+          Summary: Total projects specified: {{ openshift_projects | length }}, 
+          Projects processed: {{ filtered_projects | default([]) | length }}, 
+          Total DeploymentConfigs converted: {{ total_conversions }}
+
+    - name: Display log file contents
       ansible.builtin.debug:
-        msg: >-
-          Summary of DeploymentConfig to Deployment conversion:
-          - Total namespaces specified: {{ openshift_projects | length }}
-          - Namespaces processed: {{ filtered_projects | length }}
-          - Namespaces skipped (reserved or system): {{ skipped_namespaces | length }}
-          {% if skipped_namespaces %}
-          - Skipped namespaces: {{ skipped_namespaces | join(', ') }}
-          {% endif %}
-          - Total DeploymentConfigs converted: {{ total_conversions }}
-          - YAML files saved in subdirectories of: {{ output_dir }}
-          - Changes applied to cluster: {{ apply_changes | bool }}
-          - Migration timestamp: {{ migration_timestamp }}
+        msg: "{{ lookup('ansible.builtin.file', log_file) }}"
