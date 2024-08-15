@@ -22,13 +22,17 @@ spec:
   selector:
     matchLabels:
 {% for key, value in dc.spec.selector | default({}) | dictsort %}
+{% if key != 'deploymentconfig' %}
       {{ key }}: "{{ value }}"
+{% endif %}
 {% endfor %}
   template:
     metadata:
       labels:
 {% for key, value in dc.spec.template.metadata.labels | default({}) | dictsort %}
+{% if key != 'deploymentconfig' %}
         {{ key }}: "{{ value }}"
+{% endif %}
 {% endfor %}
     spec:
       containers:

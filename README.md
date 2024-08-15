@@ -13,8 +13,6 @@ Key points about DeploymentConfig deprecation:
 - Kubernetes Deployments are the recommended replacement, offering similar functionality with better compatibility.
 - Migrating to Deployments ensures alignment with standard Kubernetes practices and readiness for future OpenShift versions.
 
-This playbook facilitates a smooth and efficient transition by automating the conversion process. It allows organizations to systematically migrate their workloads to Deployments, reducing the risk and effort associated with manual migrations.
-
 ## Features
 
 - Automatically identifies and skips reserved OpenShift namespaces
@@ -23,8 +21,7 @@ This playbook facilitates a smooth and efficient transition by automating the co
 - Optional application of the generated Deployments to the cluster
 - Adds annotations to track the migration process
 - Preserves existing labels and annotations (configurable)
-- Supports custom labels and annotations
-- Comprehensive logging of the migration process
+- Removes DeploymentConfig-specific labels and annotations
 
 ## Prerequisites
 
@@ -56,30 +53,30 @@ The playbook can be configured by modifying the following variables in the `play
 - `output_dir`: Directory where the generated Deployment YAML files will be saved
 - `reserved_namespaces`: List of namespaces to be excluded from processing
 - `apply_changes`: Boolean to control whether to apply the generated Deployments to the cluster
-- `log_file`: Path to the log file for migration process details
-- `custom_annotations`: List of custom annotations to be added to the new Deployments
-- `custom_labels`: List of custom labels to be added to the new Deployments
-- `preserve_existing_annotations`: Boolean to control whether to preserve existing annotations
-- `preserve_existing_labels`: Boolean to control whether to preserve existing labels
+- `preserve_existing_annotations`: Boolean to control whether to keep existing annotations (except DeploymentConfig-specific ones)
+- `preserve_existing_labels`: Boolean to control whether to keep existing labels (except DeploymentConfig-specific ones)
+- `dc_specific_annotations`: List of DeploymentConfig-specific annotations to remove
+- `dc_specific_labels`: List of DeploymentConfig-specific labels to remove
 
 Example configuration:
 
 ```yaml
 vars:
-  openshift_projects: []  # Leave empty to process all non-reserved namespaces
+  openshift_projects: []
   output_dir: "./converted_deployments"
   reserved_namespaces:
     - "default"
     - "openshift"
     - "openshift-infra"
   apply_changes: false
-  log_file: "conversion_log.txt"
-  custom_annotations:
-    - "mycompany.com/custom-annotation"
-  custom_labels:
-    - "mycompany.com/custom-label"
   preserve_existing_annotations: true
   preserve_existing_labels: true
+  dc_specific_annotations:
+    - "openshift.io/deployment-config.name"
+    - "openshift.io/deployment-config.latest-version"
+    - "openshift.io/deployment.phase"
+  dc_specific_labels:
+    - "openshift.io/deployment-config.name"
 ```
 
 ## Usage
@@ -96,9 +93,9 @@ vars:
    ansible-playbook playbook.yaml -e "apply_changes=true"
    ```
 
-4. To process specific projects:
+4. To specify projects to process:
    ```
-   ansible-playbook playbook.yaml -e '{"openshift_projects": ["project1", "project2"]}'
+   ansible-playbook playbook.yaml -e "openshift_projects=['project1', 'project2']"
    ```
 
 ## Output
@@ -115,7 +112,11 @@ The playbook will create a directory structure as follows:
       └── deployment4.yaml
 ```
 
-Each generated Deployment YAML file will include annotations indicating it was created by this migration process and the timestamp of creation. The playbook will also generate a detailed log file (`conversion_log.txt` by default) with information about the migration process.
+Each generated Deployment YAML file will include annotations indicating it was created by this migration process and the timestamp of creation.
+
+## Logging
+
+The playbook generates a log file (`conversion_log.txt` by default) that includes details about the conversion process, any errors encountered, and a summary of the conversion.
 
 ## Warnings and Considerations
 
@@ -123,16 +124,15 @@ Each generated Deployment YAML file will include annotations indicating it was c
 - Ensure you have backups of your DeploymentConfigs before running this playbook with `apply_changes=true`.
 - This playbook performs a basic conversion. You may need to manually adjust the generated Deployments for workloads with complex configurations.
 - Test thoroughly in a non-production environment before using in production.
-- The playbook now preserves existing labels and annotations by default. Review these settings to ensure they align with your migration strategy.
+- The playbook removes the 'deploymentconfig' label from the selector and template metadata to ensure compatibility with Deployments.
 
 ## Troubleshooting
 
 - If you encounter permission issues, ensure your kubeconfig is correctly set up with the necessary permissions.
 - For namespace-related errors, check that the specified projects exist and you have access to them.
 - If DeploymentConfigs are not being processed, verify they exist in the specified namespaces.
-- Check the `conversion_log.txt` file for detailed information about the migration process and any errors encountered.
-- Verify that the custom annotations and labels you've specified exist in the source DeploymentConfigs.
-- If you're having issues with preserved annotations or labels, try setting `preserve_existing_annotations` and `preserve_existing_labels` to `false` to see if that resolves the problem.
+- Check the conversion log file for detailed information about any errors or issues encountered during the migration process.
+- Ensure that the Jinja2 template (`deployment.j2`) is up to date and properly formatted.
 
 ## Contributing
 

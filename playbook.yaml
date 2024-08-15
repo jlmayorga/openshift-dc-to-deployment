@@ -111,7 +111,7 @@
       ansible.builtin.lineinfile:
         path: "{{ log_file }}"
         line: "Skipping reserved or system namespaces: {{ skipped_namespaces | join(', ') }}"
-      when: 
+      when:
         - skipped_namespaces is defined
         - skipped_namespaces | length > 0
 
